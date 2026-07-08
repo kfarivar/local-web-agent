@@ -1,0 +1,19 @@
+# Sample settings for efficient-web-agent.
+# Load with: efficient-web-agent --settings efficient_web_agent/settings.example.yaml "your task"
+
+model_name: Qwen/Qwen3-4B-AWQ
+base_url: http://0.0.0.0:8000/v1
+api_key: api-key-not-set
+
+max_steps: 20
+vision_enabled: false
+headless: false
+
+snippet_char_budget: 10000
+max_region_chars: 12000
+match_neighborhood_chars: 240
+tool_result_char_budget: 40000
+history_message_limit: 24
+
+aria_depth: 4
+browser_timeout_ms: 15000

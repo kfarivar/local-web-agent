@@ -1,0 +1,35 @@
+[project]
+name = "camoufox-plus-playwright"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.14"
+dependencies = [
+    "beautifulsoup4>=4.12.3",
+    "camoufox>=0.4.11",
+    "langfuse>=4.7.1",
+    "logfire>=4.32.1",
+    "ollama>=0.6.2",
+    "pydantic-ai>=1.93.0",
+    "pyyaml>=6.0.3",
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.24.0",
+]
+
+[project.scripts]
+efficient-web-agent = "efficient_web_agent.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.uv]
+package = true
+
+[tool.hatch.build.targets.wheel]
+packages = ["efficient_web_agent"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+pythonpath = ["."]
+testpaths = ["tests"]

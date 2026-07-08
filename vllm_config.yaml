@@ -1,0 +1,18 @@
+model: Qwen/Qwen3-4B-AWQ
+
+# Quantization
+quantization: awq_marlin
+dtype: float16
+
+# Memory / performance tuning
+gpu_memory_utilization: 0.7
+max_model_len: auto
+
+# KV cache
+kv_cache_dtype: auto
+
+# disabe model thinking
+default_chat_template_kwargs: '{"enable_thinking": true}'
+
+enable_auto_tool_choice: true
+tool_call_parser: hermes
