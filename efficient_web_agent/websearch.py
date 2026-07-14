@@ -201,7 +201,7 @@ def create_websearch_tool(
             query=query,
             user_location=user_location or defaults.user_location,
             blocked_domains=_merge_domains(defaults.blocked_domains, blocked_domains),
-            allowed_domains=defaults.allowed_domains,
+            allowed_domains=_merge_domains(defaults.allowed_domains, allowed_domains),
             max_results=max_results if max_results is not None else defaults.max_results,
             max_uses=defaults.max_uses,
         )
