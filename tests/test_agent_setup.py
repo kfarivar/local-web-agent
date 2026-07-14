@@ -1,6 +1,14 @@
+from types import SimpleNamespace
+
 from pydantic_ai.usage import RunUsage
 
-from efficient_web_agent.agent import _usage_to_dict, create_agent, create_model
+from efficient_web_agent.agent import (
+    _fetch_max_model_len,
+    _print_context_usage,
+    _usage_to_dict,
+    create_agent,
+    create_model,
+)
 from efficient_web_agent.settings import AgentSettings
 
 
@@ -42,3 +50,43 @@ def test_usage_to_dict_serializes_pydantic_ai_run_usage() -> None:
     assert serialized["input_tokens"] == 3
     assert serialized["output_tokens"] == 4
     assert serialized["details"] == {}
+
+
+def test_context_usage_prints_percentage_to_stderr(capsys) -> None:
+    _print_context_usage(2, 2048, 8192)
+
+    assert capsys.readouterr().err.strip() == "[context] step 2: 25.0% used (2048/8192 input tokens)"
+
+
+async def test_fetch_max_model_len_uses_pydantic_ai_openai_client() -> None:
+    model = SimpleNamespace(
+        client=SimpleNamespace(
+            models=SimpleNamespace(
+                list=_AsyncModelList(
+                    [
+                        _ModelCard("other-model", 4096),
+                        _ModelCard("local-model", 8192),
+                    ]
+                )
+            )
+        )
+    )
+
+    assert await _fetch_max_model_len(model, "local-model") == 8192
+
+
+class _AsyncModelList:
+    def __init__(self, data: list[object]) -> None:
+        self._data = data
+
+    async def __call__(self) -> SimpleNamespace:
+        return SimpleNamespace(data=self._data)
+
+
+class _ModelCard:
+    def __init__(self, model_id: str, max_model_len: int) -> None:
+        self.id = model_id
+        self._max_model_len = max_model_len
+
+    def model_dump(self) -> dict[str, object]:
+        return {"id": self.id, "max_model_len": self._max_model_len}

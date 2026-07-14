@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
+import sys
 from dataclasses import asdict, dataclass, field, is_dataclass
 from typing import Literal
 
 from pydantic_ai import Agent, BinaryContent, RunContext, ToolReturn
 from pydantic_ai.capabilities import ProcessHistory
+from pydantic_ai.capabilities.hooks import Hooks
+from pydantic_ai.messages import ModelResponse
+from pydantic_ai.models import ModelRequestContext
 from pydantic_ai.models.openai import OpenAIChatModel
 from pydantic_ai.providers.openai import OpenAIProvider
 from pydantic_ai.usage import UsageLimits
@@ -44,6 +48,9 @@ class AgentDeps:
         failed_searches: Count of consecutive search_page calls with no match.
         web_searches: Count of websearch tool calls during the run.
         steps: Count of tool calls recorded by the agent tools.
+        max_model_len: Effective model context window reported by the server,
+            when available.
+        model_requests: Count of completed model requests during the run.
     """
 
     settings: AgentSettings
@@ -52,6 +59,8 @@ class AgentDeps:
     failed_searches: int = 0
     web_searches: int = 0
     steps: int = 0
+    max_model_len: int | None = None
+    model_requests: int = 0
 
 
 def create_model(settings: AgentSettings) -> OpenAIChatModel:
@@ -68,12 +77,14 @@ def create_model(settings: AgentSettings) -> OpenAIChatModel:
     return OpenAIChatModel(settings.model_name, provider=provider)
 
 
-def create_agent(settings: AgentSettings) -> Agent[AgentDeps, str]:
+def create_agent(settings: AgentSettings, model: OpenAIChatModel | None = None) -> Agent[AgentDeps, str]:
     """Create the Pydantic AI web agent and register browser tools.
 
     Args:
         settings: AgentSettings controlling model configuration, history
             trimming, and tool behavior.
+        model: Optional prebuilt model. When omitted, a model is created from
+            settings.
 
     Returns:
         Agent configured with instructions, dependency type, history processor,
@@ -81,13 +92,31 @@ def create_agent(settings: AgentSettings) -> Agent[AgentDeps, str]:
     """
 
     configure_llm_observability()
+    hooks = Hooks()
+
+    @hooks.on.after_model_request
+    async def print_context_usage(
+        ctx: RunContext[AgentDeps],
+        *,
+        request_context: ModelRequestContext,
+        response: ModelResponse,
+    ) -> ModelResponse:
+        _ = request_context
+        ctx.deps.model_requests += 1
+        _print_context_usage(
+            ctx.deps.model_requests,
+            response.usage.input_tokens,
+            ctx.deps.max_model_len,
+        )
+        return response
+
     agent = Agent(
-        create_model(settings),
+        model or create_model(settings),
         deps_type=AgentDeps,
         instructions=INSTRUCTIONS,
         tools=[create_websearch_tool(result_char_budget=settings.tool_result_char_budget)],
-        capabilities=[ProcessHistory(history_processor(settings.history_message_limit))],
-        tool_timeout=30
+        capabilities=[ProcessHistory(history_processor(settings.history_message_limit)), hooks],
+        tool_timeout=30,
     )
 
     @agent.tool(include_return_schema=False)
@@ -306,9 +335,11 @@ async def run_agent(goal: str, settings: AgentSettings | None = None) -> AgentRe
     """
 
     settings = settings or AgentSettings.from_env()
-    agent = create_agent(settings)
+    model = create_model(settings)
+    agent = create_agent(settings, model=model)
+    max_model_len = await _fetch_max_model_len(model, settings.model_name)
     async with BrowserController(settings) as browser:
-        deps = AgentDeps(settings=settings, browser=browser)
+        deps = AgentDeps(settings=settings, browser=browser, max_model_len=max_model_len)
         result = await agent.run(
             f"Complete this browser task efficiently with bounded context only:\n\n{goal}",
             deps=deps,
@@ -339,6 +370,40 @@ def _record_url(deps: AgentDeps, url: str) -> None:
 
     if url and (not deps.visited_urls or deps.visited_urls[-1] != url):
         deps.visited_urls.append(url)
+
+
+async def _fetch_max_model_len(model: OpenAIChatModel, model_name: str) -> int | None:
+    try:
+        model_list = await model.client.models.list()
+    except Exception:
+        return None
+
+    models = list(model_list.data)
+    matching_models = [item for item in models if item.id == model_name]
+
+    for item in [*matching_models, *models]:
+        max_model_len = getattr(item, "max_model_len", None)
+        if not isinstance(max_model_len, int):
+            model_dump = getattr(item, "model_dump", None)
+            if callable(model_dump):
+                dumped = model_dump()
+                if isinstance(dumped, dict):
+                    max_model_len = dumped.get("max_model_len")
+        if isinstance(max_model_len, int) and max_model_len > 0:
+            return max_model_len
+    return None
+
+
+def _print_context_usage(step: int, input_tokens: int, max_model_len: int | None) -> None:
+    if max_model_len is None:
+        message = f"[context] step {step}: {input_tokens} input tokens (max context unknown)"
+    else:
+        percentage = input_tokens / max_model_len * 100
+        message = (
+            f"[context] step {step}: "
+            f"{percentage:.1f}% used ({input_tokens}/{max_model_len} input tokens)"
+        )
+    print(message, file=sys.stderr, flush=True)
 
 
 def _cap_action_result(result: ActionResult, limit: int) -> ActionResult:
@@ -377,4 +442,3 @@ def _usage_to_dict(usage: object | None) -> dict[str, object]:
     if is_dataclass(usage):
         return asdict(usage)
     return dict(vars(usage))
-
