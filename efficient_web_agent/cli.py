@@ -58,7 +58,8 @@ async def async_main(argv: list[str] | None = None) -> int:
     }
     settings = AgentSettings.from_sources(yaml_path=args.settings_path, cli_overrides=overrides)
     result = await run_agent(args.goal, settings)
-    print(json.dumps(result.model_dump(mode="json"), indent=2))
+    print(result.answer)
+    print(json.dumps(result.model_dump(mode="json", exclude={"answer"}), indent=2))
     return 0
 
 

@@ -6,6 +6,7 @@ from dataclasses import asdict, dataclass, field, is_dataclass
 from typing import Literal
 
 from pydantic_ai import Agent, BinaryContent, RunContext, ToolReturn
+from pydantic_ai.capabilities import ProcessHistory
 from pydantic_ai.models.openai import OpenAIChatModel
 from pydantic_ai.providers.openai import OpenAIProvider
 from pydantic_ai.usage import UsageLimits
@@ -15,11 +16,13 @@ from .context import cap_text, history_processor
 from .models import ActionResult, AgentResult, BrowserState, ExtractionResult
 from .observability import configure_llm_observability, flush_observability, observed
 from .settings import AgentSettings
+from .websearch import create_websearch_tool
 
 INSTRUCTIONS = """You are an efficient web agent for a local LLM with a small context window.
 
 Core rules:
 - Never ask for or expect full webpage dumps.
+- use websearch to find useful webpages.
 - use navigate to access webpages.
 - Use observe_page, list_interactive, search_page, and extract_neighborhood to inspect bounded page regions.
 - Use search_page with focused terms before extracting neighborhoods.
@@ -39,6 +42,7 @@ class AgentDeps:
         browser: Active BrowserController used by tools.
         visited_urls: Ordered URL log populated during the run.
         failed_searches: Count of consecutive search_page calls with no match.
+        web_searches: Count of websearch tool calls during the run.
         steps: Count of tool calls recorded by the agent tools.
     """
 
@@ -46,6 +50,7 @@ class AgentDeps:
     browser: BrowserController
     visited_urls: list[str] = field(default_factory=list)
     failed_searches: int = 0
+    web_searches: int = 0
     steps: int = 0
 
 
@@ -80,8 +85,9 @@ def create_agent(settings: AgentSettings) -> Agent[AgentDeps, str]:
         create_model(settings),
         deps_type=AgentDeps,
         instructions=INSTRUCTIONS,
-        history_processors=[history_processor(settings.history_message_limit)],
-        tool_timeout=30,
+        tools=[create_websearch_tool(result_char_budget=settings.tool_result_char_budget)],
+        capabilities=[ProcessHistory(history_processor(settings.history_message_limit))],
+        tool_timeout=30
     )
 
     @agent.tool(include_return_schema=False)
@@ -309,11 +315,14 @@ async def run_agent(goal: str, settings: AgentSettings | None = None) -> AgentRe
             usage_limits=UsageLimits(request_limit=settings.max_steps),
         )
         flush_observability()
+        usage = result.usage
+        if callable(usage):
+            usage = usage()
         return AgentResult(
             answer=str(result.output),
             steps=deps.steps,
             visited_urls=deps.visited_urls,
-            usage=_usage_to_dict(result.usage()),
+            usage=_usage_to_dict(usage),
         )
 
 
@@ -368,3 +377,4 @@ def _usage_to_dict(usage: object | None) -> dict[str, object]:
     if is_dataclass(usage):
         return asdict(usage)
     return dict(vars(usage))
+

@@ -15,7 +15,8 @@ uv.lock
 
 .agents/*
 .codex/*
+.vscode
 
 # my stuff
-test.py
+scratch_test.py
 planning/*

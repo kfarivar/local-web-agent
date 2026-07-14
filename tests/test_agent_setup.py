@@ -18,7 +18,7 @@ def test_create_agent_registers_context_safe_tools() -> None:
     agent = create_agent(settings)
     tool_names = set(agent._function_toolset.tools)  # noqa: SLF001 - verifies public behavior missing a public accessor.
 
-    assert {"observe_page", "search_page", "extract_neighborhood", "click_element", "screenshot_for_query_help"} <= tool_names
+    assert {"observe_page", "search_page", "extract_neighborhood", "click_element", "screenshot_for_query_help", "websearch"} <= tool_names
 
 
 def test_agent_tools_expose_argument_and_return_guidance() -> None:
