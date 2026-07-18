@@ -163,7 +163,6 @@ The agent is designed around context discipline:
 - `observe_page` returns URL, title, and a bounded ARIA snapshot.
 - `search_page` searches the local BeautifulSoup index and returns ranked snippets.
 - `extract_neighborhood` expands around a known `ref_id` without dumping the page.
-- `list_interactive` exposes actionable controls with stable per-page references.
 - `click_element` and `type_text` operate on those references instead of guessed selectors.
 - `history_processor` trims old Pydantic AI messages while preserving valid tool-call structure.
 - Tool results are capped with explicit character budgets.

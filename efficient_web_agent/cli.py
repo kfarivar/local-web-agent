@@ -60,11 +60,11 @@ async def async_main(argv: list[str] | None = None) -> int:
     result = await run_agent(args.goal, settings)
 
     print('answer:')
-    print(result.answer.answer)
+    print(result.answer)
 
     print('\nmeta data:')
     print(json.dumps(result.model_dump(mode="json", exclude={"answer"}), indent=2))
-    
+
     return 0
 
 

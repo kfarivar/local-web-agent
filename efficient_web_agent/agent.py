@@ -5,7 +5,7 @@ from __future__ import annotations
 import sys
 from dataclasses import asdict, dataclass, field, is_dataclass
 
-from pydantic_ai import Agent, RunContext
+from pydantic_ai import Agent, AgentRunResult, RunContext
 from pydantic_ai.capabilities import ProcessHistory
 from pydantic_ai.capabilities.hooks import Hooks
 from pydantic_ai.messages import ModelResponse
@@ -13,6 +13,7 @@ from pydantic_ai.models import ModelRequestContext
 from pydantic_ai.models.openai import OpenAIChatModel
 from pydantic_ai.providers.openai import OpenAIProvider
 from pydantic_ai.usage import UsageLimits
+from pydantic_graph import End
 
 from .browser import BrowserController
 from .context import cap_text, history_processor
@@ -32,7 +33,7 @@ Core rules:
 The general process to follow:
 1. use the websearch tool to find promising urls based on the task goal.
 2. use the navigate tool to access each of the urls you have found in step 1.
-3. use the observe_page, list_interactive, search_page, and extract_neighborhood tools to inspect bounded page regions and extract the necessary info.
+3. use the observe_page, search_page, and extract_neighborhood tools to inspect bounded page regions and extract the necessary info.
 
 """
 
@@ -177,7 +178,6 @@ def create_agent(settings: AgentSettings, model: OpenAIChatModel | None = None) 
             _record_url(ctx.deps, result.state.url)
         return _cap_action_result(result, ctx.deps.settings.tool_result_char_budget)
 
-    
     @agent.tool(include_return_schema=False)
     async def search_page(ctx: RunContext[AgentDeps], query: str, limit: int = 5) -> ExtractionResult:
         """Search the BeautifulSoup page index for relevant page regions.
@@ -205,8 +205,7 @@ def create_agent(settings: AgentSettings, model: OpenAIChatModel | None = None) 
         """Extract bounded snippets around an indexed DOM ref_id.
 
         Args:
-            ref_id: Element reference returned by search_page or
-                list_interactive, such as `e12`.
+            ref_id: Element reference returned by search_page, such as `e12`.
             before: Number of indexed elements before `ref_id` to include.
             after: Number of indexed elements after `ref_id` to include.
 
@@ -224,9 +223,8 @@ def create_agent(settings: AgentSettings, model: OpenAIChatModel | None = None) 
         """Click an indexed element by DOM ref_id.
 
         Args:
-            ref_id: Element reference returned by search_page or
-                list_interactive, such as `e12`. Prefer this over guessing
-                visible text or CSS selectors.
+            ref_id: Element reference returned by search_page, such as `e12`.
+                Prefer this over guessing visible text or CSS selectors.
 
         Returns:
             ActionResult describing the click result and the bounded
@@ -246,7 +244,7 @@ def create_agent(settings: AgentSettings, model: OpenAIChatModel | None = None) 
 
         Args:
             ref_id: Element reference for an input, textarea, select-like, or
-                editable control returned by search_page or list_interactive.
+                editable control returned by search_page.
             text: Text to enter into the control.
             submit: Whether to press Enter after filling the control.
 
@@ -260,7 +258,6 @@ def create_agent(settings: AgentSettings, model: OpenAIChatModel | None = None) 
         if result.state is not None:
             _record_url(ctx.deps, result.state.url)
         return _cap_action_result(result, ctx.deps.settings.tool_result_char_budget)
-
 
     return agent
 
@@ -285,21 +282,52 @@ async def run_agent(goal: str, settings: AgentSettings | None = None) -> AgentRe
     max_model_len = await _fetch_max_model_len(model, settings.model_name)
     async with BrowserController(settings) as browser:
         deps = AgentDeps(settings=settings, browser=browser, max_model_len=max_model_len)
-        result = await agent.run(
+        result = await _run_agent_iter(
+            agent,
             f"Complete this browser task efficiently with bounded context only:\n\n{goal}",
-            deps=deps,
-            usage_limits=UsageLimits(request_limit=settings.max_steps),
+            deps,
+            UsageLimits(request_limit=settings.max_steps),
         )
         flush_observability()
-        usage = result.usage
-        if callable(usage):
-            usage = usage()
         return AgentResult(
             answer=result.output,
             steps=deps.steps,
             visited_urls=deps.visited_urls,
-            usage=_usage_to_dict(usage),
+            usage=_usage_to_dict(result.usage),
         )
+
+
+async def _run_agent_iter(
+    agent: Agent[AgentDeps, str],
+    prompt: str,
+    deps: AgentDeps,
+    usage_limits: UsageLimits,
+) -> AgentRunResult[str]:
+    """Drive an agent with `iter()` while preserving capability and hook behavior.
+
+    Args:
+        agent: Configured Pydantic AI agent to run.
+        prompt: User prompt to pass into the agent run.
+        deps: Runtime dependencies shared by tools.
+        usage_limits: Pydantic AI usage limits for the run.
+
+    Returns:
+        Final Pydantic AI run result.
+
+    Raises:
+        RuntimeError: If the iterator reaches the end without exposing a final
+            result.
+    """
+
+    async with agent.iter(prompt, deps=deps, usage_limits=usage_limits) as agent_run:
+        node = agent_run.next_node
+        while not isinstance(node, End):
+            node = await agent_run.next(node)
+
+        result = agent_run.result
+        if result is None:
+            raise RuntimeError("Agent iterator ended without a final result.")
+        return result
 
 
 def _record_url(deps: AgentDeps, url: str) -> None:
