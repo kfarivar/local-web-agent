@@ -1,5 +1,5 @@
 run:
-	uv run --env-file .env efficient-web-agent 'find the main modes of transportation in tokyo then summarize the main info and statistics for each mode. only use the information from sources online do not use your own memory. reference the source for every fact you write.' --settings ./efficient_web_agent/settings.example.yaml
+	uv run --env-file .env efficient-web-agent 'find the main modes of transportation in tokyo then summarize the main info and statistics for each mode.' --settings ./efficient_web_agent/settings.example.yaml
 
 test:
 	uv run --env-file .env python scratch_test.py

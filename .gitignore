@@ -19,4 +19,5 @@ uv.lock
 
 # my stuff
 scratch_test.py
+scrap_pad.py
 planning/*

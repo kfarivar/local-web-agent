@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ConfigDict
 
 
 class BrowserState(BaseModel):
@@ -91,6 +91,20 @@ class ActionResult(BaseModel):
     state: BrowserState | None = None
 
 
+# class FinalAnswer(BaseModel):
+#     """this is the output type of the agent without it any string returned by agent would mean the end of the run."""
+
+#     # this overwrites the description sent to the model.
+#     model_config = ConfigDict(
+#         json_schema_extra={
+#             "description": "The agent's final researched answer with supporting source URLs."
+#         }
+#     )
+
+#     answer:str = Field(description='the final answer.')
+#     sources:list[str] = Field(description='A list of valid urls used to gather the main info the final answer is based on.')
+
+
 class AgentResult(BaseModel):
     """Final result returned by the public agent runner.
 
@@ -105,3 +119,5 @@ class AgentResult(BaseModel):
     steps: int = 0
     visited_urls: list[str] = Field(default_factory=list)
     usage: dict[str, object] = Field(default_factory=dict)
+
+

@@ -4,9 +4,8 @@ from __future__ import annotations
 
 import sys
 from dataclasses import asdict, dataclass, field, is_dataclass
-from typing import Literal
 
-from pydantic_ai import Agent, BinaryContent, RunContext, ToolReturn
+from pydantic_ai import Agent, RunContext
 from pydantic_ai.capabilities import ProcessHistory
 from pydantic_ai.capabilities.hooks import Hooks
 from pydantic_ai.messages import ModelResponse
@@ -22,18 +21,19 @@ from .observability import configure_llm_observability, flush_observability, obs
 from .settings import AgentSettings
 from .websearch import create_websearch_tool
 
-INSTRUCTIONS = """You are an efficient web agent for a local LLM with a small context window.
+INSTRUCTIONS = """You are a web agent with a small context window.
 
 Core rules:
-- Never ask for or expect full webpage dumps.
-- use websearch to find useful webpages.
-- use navigate to access webpages.
-- Use observe_page, list_interactive, search_page, and extract_neighborhood to inspect bounded page regions.
+- Never use your memory as a source of information. All the info you use should be extracted from the web. reference the source for every fact or figure you use. Only use reliable sources.
 - Use search_page with focused terms before extracting neighborhoods.
-- If repeated search_page calls do not find useful snippets, use screenshot_for_query_help only when vision is enabled.
 - Prefer click_element with a DOM ref_id over text guesses. Element clicks use DOM locator/bounding-box data.
-- Keep a compact memory of tried queries, visited pages, and useful ref_ids.
-- Return the final answer directly when the task is complete.
+
+
+The general process to follow:
+1. use the websearch tool to find promising urls based on the task goal.
+2. use the navigate tool to access each of the urls you have found in step 1.
+3. use the observe_page, list_interactive, search_page, and extract_neighborhood tools to inspect bounded page regions and extract the necessary info.
+
 """
 
 
@@ -117,6 +117,8 @@ def create_agent(settings: AgentSettings, model: OpenAIChatModel | None = None) 
         tools=[create_websearch_tool(result_char_budget=settings.tool_result_char_budget)],
         capabilities=[ProcessHistory(history_processor(settings.history_message_limit)), hooks],
         tool_timeout=30,
+        model_settings={"parallel_tool_calls": False},
+        # setting output_type=FinalAnswer will cause the model to stop thinking since it can only respond in tool format. using NativeOutput makes it worse and all the generations will be in the FinalAnswer format which ends the run after 1 step.
     )
 
     @agent.tool(include_return_schema=False)
@@ -175,41 +177,7 @@ def create_agent(settings: AgentSettings, model: OpenAIChatModel | None = None) 
             _record_url(ctx.deps, result.state.url)
         return _cap_action_result(result, ctx.deps.settings.tool_result_char_budget)
 
-    @agent.tool(include_return_schema=False)
-    async def scroll(ctx: RunContext[AgentDeps], direction: Literal["up", "down"], amount: int = 700) -> ActionResult:
-        """Scroll the visible page.
-
-        Args:
-            direction: Scroll direction, either `up` or `down`.
-            amount: Number of pixels to scroll. Use a moderate value when
-                searching nearby content and a larger value to move faster.
-
-        Returns:
-            ActionResult describing the scroll and the bounded BrowserState
-            after scrolling.
-        """
-
-        ctx.deps.steps += 1
-        return _cap_action_result(await ctx.deps.browser.scroll(direction, amount), ctx.deps.settings.tool_result_char_budget)
-
-    @agent.tool(include_return_schema=False)
-    async def list_interactive(ctx: RunContext[AgentDeps], limit: int = 20) -> ExtractionResult:
-        """List currently indexed interactive elements.
-
-        Args:
-            limit: Maximum number of interactive elements to return. Values are
-                clamped to a safe range.
-
-        Returns:
-            ExtractionResult containing bounded snippets for links, buttons,
-            inputs, and similar controls. Use returned `ref_id` values with
-            click_element or type_text.
-        """
-
-        ctx.deps.steps += 1
-        index = await ctx.deps.browser.refresh_index()
-        return index.list_interactive(limit=max(1, min(limit, 50)))
-
+    
     @agent.tool(include_return_schema=False)
     async def search_page(ctx: RunContext[AgentDeps], query: str, limit: int = 5) -> ExtractionResult:
         """Search the BeautifulSoup page index for relevant page regions.
@@ -293,29 +261,6 @@ def create_agent(settings: AgentSettings, model: OpenAIChatModel | None = None) 
             _record_url(ctx.deps, result.state.url)
         return _cap_action_result(result, ctx.deps.settings.tool_result_char_budget)
 
-    @agent.tool(include_return_schema=False)
-    async def screenshot_for_query_help(ctx: RunContext[AgentDeps]) -> ToolReturn | str:
-        """Capture a viewport screenshot for visual query planning.
-
-        Args:
-            None.
-
-        Returns:
-            If vision is enabled, a ToolReturn containing a PNG viewport
-            screenshot and a short text result. If vision is disabled, a string
-            explaining that DOM, ARIA, and BeautifulSoup search tools should be
-            used instead.
-        """
-
-        ctx.deps.steps += 1
-        if not ctx.deps.settings.vision_enabled:
-            return "Vision is disabled for this run. Use observe_page, ARIA, list_interactive, or more specific DOM search terms."
-        png = await ctx.deps.browser.screenshot()
-        return ToolReturn(
-            return_value=f"Viewport screenshot captured ({len(png)} bytes). Use it only to choose better DOM/search terms.",
-            content=[BinaryContent(data=png, media_type="image/png")],
-            metadata={"bytes": len(png), "media_type": "image/png"},
-        )
 
     return agent
 
@@ -350,7 +295,7 @@ async def run_agent(goal: str, settings: AgentSettings | None = None) -> AgentRe
         if callable(usage):
             usage = usage()
         return AgentResult(
-            answer=str(result.output),
+            answer=result.output,
             steps=deps.steps,
             visited_urls=deps.visited_urls,
             usage=_usage_to_dict(usage),
