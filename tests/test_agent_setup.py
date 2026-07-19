@@ -1,14 +1,19 @@
 from types import SimpleNamespace
 
+import pytest
 from pydantic_ai import AgentRunResult
+from pydantic_ai.exceptions import ModelRetry
 from pydantic_ai.usage import RunUsage, UsageLimits
 from pydantic_graph import End
 
 from efficient_web_agent.agent import (
+    _extract_source_urls,
     _fetch_max_model_len,
+    _normalize_source_url,
     _print_context_usage,
     _run_agent_iter,
     _usage_to_dict,
+    _validate_cited_sources_were_visited,
     create_agent,
     create_model,
 )
@@ -66,6 +71,42 @@ def test_context_usage_prints_percentage_to_stderr(capsys) -> None:
     _print_context_usage(2, 2048, 8192)
 
     assert capsys.readouterr().err.strip() == "[context] step 2: 25.0% used (2048/8192 input tokens)"
+
+
+def test_extract_source_urls_from_final_answer_text() -> None:
+    output = "Sources: [Example](https://Example.com/report?ref=agent). See also https://docs.example.org/a/b, done."
+
+    assert _extract_source_urls(output) == [
+        "https://Example.com/report?ref=agent",
+        "https://docs.example.org/a/b",
+    ]
+
+
+def test_normalize_source_url_for_comparison() -> None:
+    assert _normalize_source_url("HTTPS://Example.COM:443/report/#section") == "https://example.com/report"
+    assert _normalize_source_url("https://example.com/report/?utm=1", drop_query=True) == "https://example.com/report"
+
+
+def test_validate_cited_sources_allows_visited_urls() -> None:
+    _validate_cited_sources_were_visited(
+        "Answer citing https://example.com/report.",
+        ["https://example.com/report/"],
+    )
+
+
+def test_validate_cited_sources_allows_query_only_differences() -> None:
+    _validate_cited_sources_were_visited(
+        "Answer citing https://example.com/report.",
+        ["https://example.com/report?utm_source=search"],
+    )
+
+
+def test_validate_cited_sources_retries_for_unvisited_urls() -> None:
+    with pytest.raises(ModelRetry, match="never navigated to"):
+        _validate_cited_sources_were_visited(
+            "Answer citing https://example.com/report.",
+            ["https://other.example/report"],
+        )
 
 
 async def test_fetch_max_model_len_uses_pydantic_ai_openai_client() -> None:

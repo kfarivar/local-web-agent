@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import re
 import sys
 from dataclasses import asdict, dataclass, field, is_dataclass
+from urllib.parse import urlsplit, urlunsplit
 
-from pydantic_ai import Agent, AgentRunResult, RunContext
+from pydantic_ai import Agent, AgentRunResult, ModelRetry, RunContext
 from pydantic_ai.capabilities import ProcessHistory
 from pydantic_ai.capabilities.hooks import Hooks
 from pydantic_ai.messages import ModelResponse
@@ -22,10 +24,13 @@ from .observability import configure_llm_observability, flush_observability, obs
 from .settings import AgentSettings
 from .websearch import create_websearch_tool
 
+SOURCE_URL_RE = re.compile(r"https?://[^\s<>\]})\"']+", re.IGNORECASE)
+TRAILING_URL_PUNCTUATION = ".,;:!?"
+
 INSTRUCTIONS = """You are a web agent with a small context window.
 
 Core rules:
-- Never use your memory as a source of information. All the info you use should be extracted from the web. reference the source for every fact or figure you use. Only use reliable sources.
+- Never use your memory as a source of information. All the info you use should be extracted from the web. reference the source url for every fact or figure you use. Only use reliable sources.
 - Use search_page with focused terms before extracting neighborhoods.
 - Prefer click_element with a DOM ref_id over text guesses. Element clicks use DOM locator/bounding-box data.
 
@@ -121,6 +126,20 @@ def create_agent(settings: AgentSettings, model: OpenAIChatModel | None = None) 
         model_settings={"parallel_tool_calls": False},
         # setting output_type=FinalAnswer will cause the model to stop thinking since it can only respond in tool format. using NativeOutput makes it worse and all the generations will be in the FinalAnswer format which ends the run after 1 step.
     )
+
+    @agent.output_validator
+    async def reject_premature_answer(ctx: RunContext[AgentDeps], output: str) -> str:
+        """Validate final text output before accepting the agent run result."""
+
+        if len(_extract_source_urls(output)) == 0:
+            raise ModelRetry('there are no cited url sources!')
+        
+        try:
+            _validate_cited_sources_were_visited(output, ctx.deps.visited_urls)
+        except ModelRetry as e:
+            raise e
+        
+        return output
 
     @agent.tool(include_return_schema=False)
     async def observe_page(ctx: RunContext[AgentDeps]) -> BrowserState:
@@ -343,6 +362,43 @@ def _record_url(deps: AgentDeps, url: str) -> None:
 
     if url and (not deps.visited_urls or deps.visited_urls[-1] != url):
         deps.visited_urls.append(url)
+
+
+def _extract_source_urls(text: str) -> list[str]:
+    """Extract HTTP(S) URLs from free-form final answer text."""
+
+    return [match.rstrip(TRAILING_URL_PUNCTUATION) for match in SOURCE_URL_RE.findall(text)]
+
+
+def _validate_cited_sources_were_visited(output: str, visited_urls: list[str]) -> None:
+    """Reject final answers that cite URLs the browser did not visit."""
+
+    visited = {_normalize_source_url(url) for url in visited_urls}
+    visited_without_query = {_normalize_source_url(url, drop_query=True) for url in visited_urls}
+
+    for url in _extract_source_urls(output):
+        normalized = _normalize_source_url(url)
+        if normalized in visited:
+            continue
+        if _normalize_source_url(url, drop_query=True) in visited_without_query:
+            continue
+        raise ModelRetry(f"{url} was mentioned in the final answer sources but never navigated to!")
+
+
+
+def _normalize_source_url(url: str, *, drop_query: bool = False) -> str:
+    """Normalize URLs enough to compare cited sources with visited URLs."""
+
+    parts = urlsplit(url.strip())
+    scheme = parts.scheme.lower()
+    netloc = parts.netloc.lower()
+    if scheme == "http" and netloc.endswith(":80"):
+        netloc = netloc[:-3]
+    elif scheme == "https" and netloc.endswith(":443"):
+        netloc = netloc[:-4]
+    path = parts.path.rstrip("/") or "/"
+    query = "" if drop_query else parts.query
+    return urlunsplit((scheme, netloc, path, query, ""))
 
 
 async def _fetch_max_model_len(model: OpenAIChatModel, model_name: str) -> int | None:
